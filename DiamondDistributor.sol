@@ -412,6 +412,7 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     IERC20Extended public rewardToken;
     IUniswapV2Router02 public router;
     address public _token;
+    address public _owner;
 
     struct Diamond {
         bool eligible;
@@ -429,6 +430,7 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     address[] public holders;
 
     mapping(address => uint256) public holderIndexes;
+    mapping(address => uint256) public holderClaims;
     mapping(address => Diamond) public diamonds;
     
     uint256 public totalDiamonds; 
@@ -449,26 +451,53 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         _;
     }
 
+    modifier onlyOwner() {
+        require(_msgSender() == _owner);
+        _;
+    }
+
+    modifier onlyTokenAndOwner() {
+        require(_msgSender() == _token || _msgSender() == _owner);
+        _;
+    }
+
 
     /* CONSTRUCTOR */
     constructor(address rewardToken_, address router_) {
         _token = _msgSender();
+        _owner = _msgSender();
         rewardToken = IERC20Extended(rewardToken_);
         router = IUniswapV2Router02(router_);
 
         diamondsPerHolderAccuracyFactor = 10**36;
-        diamondCycle = 7 days;
+        diamondCycle = 6 hours;
         diamondCycleStart = block.timestamp;
         diamondCycleEnd = diamondCycleStart + diamondCycle;
         previousCycleEnd = block.timestamp - 1;
-        minTokenRequired = 1 * (10**rewardToken.decimals());
+        minTokenRequired = 1000000000000000000;
     }
 
 
     /* FUNCTION */
 
+    receive() external payable {}
+
     function unInitialized(bool initialization) external onlyToken {
         initialized = initialization;
+    }
+
+    function resetCycle() external onlyOwner {
+        diamondCycleStart = block.timestamp;
+        diamondCycleEnd = diamondCycleStart + diamondCycle;
+        previousCycleEnd = block.timestamp - 1;
+    }
+
+    function setRewardToken(address rewardToken_) external onlyOwner {
+        rewardToken = IERC20Extended(rewardToken_);
+    }
+
+    function setRouter(address router_) external onlyOwner {
+        router = IUniswapV2Router02(router_);
     }
 
     function setTokenAddress(address token_) external initializer onlyToken {
@@ -478,6 +507,10 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     function setDiamondCriteria(uint256 _diamondCycle, uint256 _minTokenRequired) external override onlyToken {
         diamondCycle = _diamondCycle;
         minTokenRequired = _minTokenRequired;
+    }
+
+    function checkCurrentTimestamp() public view returns (uint256) {
+        return block.timestamp;
     }
 
     /**
@@ -525,10 +558,10 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     }
     
     function shouldDistribute(address holder) internal view returns (bool) {
-        return diamonds[holder].eligible == true && diamonds[holder].eligibleTime + diamondCycle <= previousCycleEnd;
+        return holderClaims[holder] < (previousCycleEnd + 1) && diamonds[holder].eligible == true && diamonds[holder].eligibleTime + diamondCycle <= previousCycleEnd;
     }
 
-    function deposit() external payable override onlyToken {
+    function deposit() external payable override onlyTokenAndOwner {
         uint256 balanceBefore = rewardToken.balanceOf(address(this));
 
         address[] memory path = new address[](2);
@@ -546,7 +579,6 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
     }
 
-
     /**
      * @dev Distribute diamond to the holders and update diamond information.
      */
@@ -560,28 +592,33 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         if (amount > 0) {
             totalDistributed = totalDistributed.add(amount);
             rewardToken.transfer(holder, amount);
-            diamonds[holder].eligibleTime == previousCycleEnd;
+            holderClaims[holder] = block.timestamp;
+            diamonds[holder].eligibleTime = previousCycleEnd;
             diamonds[holder].totalRealised = diamonds[holder].totalRealised.add(amount);
         }
     }
     
     /**
-     * @dev Get the cumulative dividend for the given share.
+     * @dev Get the cumulative diamond for the given share.
      */
     function getCumulativeDiamonds() internal returns (uint256) {
 
         if (block.timestamp > diamondCycleEnd) {
-            previousCycleEnd = diamondCycleEnd;
-            diamondCycleStart = previousCycleEnd;
-            diamondCycleEnd = previousCycleEnd + diamondCycle;
+            
+            diamondCycleStart = diamondCycleEnd;
+            diamondCycleEnd = diamondCycleEnd + diamondCycle;
+            previousCycleEnd = diamondCycleStart - 1;
 
             uint256 current = rewardToken.balanceOf(address(this));
             diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
-            return diamondsPerHolder;
+
+            return diamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
+
         }
 
-        return diamondsPerHolder;
+        return diamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
     }
+    
     
     /**
      * @dev Get unpaid diamond that needed to be distributed for the given address.
@@ -594,13 +631,14 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         return getCumulativeDiamonds();
     }
 
+
     /**
      * @dev Add the address to the array of holders.
      */
     function addHolder(address holder) internal {
         holderIndexes[holder] = holders.length;
         holders.push(holder);
-        diamonds[holder].eligibleTime == block.timestamp;
+        diamonds[holder].eligibleTime = block.timestamp;
     }
 
     /**
@@ -610,8 +648,7 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         holders[holderIndexes[holder]] = holders[holders.length - 1];
         holderIndexes[holders[holders.length - 1]] = holderIndexes[holder];
         holders.pop();
-        diamonds[holder].eligibleTime == block.timestamp;
+        diamonds[holder].eligibleTime = block.timestamp;
     }
-
 
 }
