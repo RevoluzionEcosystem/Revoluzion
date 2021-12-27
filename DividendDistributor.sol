@@ -412,6 +412,7 @@ contract DividendDistributor is IDividendDistributor, Context {
     IERC20Extended public rewardToken;
     IUniswapV2Router02 public router;
     address public _token;
+    address public _owner;
 
     struct Share {
         uint256 amount;
@@ -448,10 +449,21 @@ contract DividendDistributor is IDividendDistributor, Context {
         _;
     }
 
+    modifier onlyOwner() {
+        require(_msgSender() == _owner);
+        _;
+    }
+
+    modifier onlyTokenAndOwner() {
+        require(_msgSender() == _token || _msgSender() == _owner);
+        _;
+    }
+
 
     /* CONSTRUCTOR */
     constructor(address rewardToken_, address router_) {
         _token = _msgSender();
+        _owner = _msgSender();
         rewardToken = IERC20Extended(rewardToken_);
         router = IUniswapV2Router02(router_);
 
@@ -463,8 +475,18 @@ contract DividendDistributor is IDividendDistributor, Context {
 
     /* FUNCTION */
 
+    receive() external payable {}
+
     function unInitialized(bool initialization) external onlyToken {
         initialized = initialization;
+    }
+
+    function setRewardToken(address rewardToken_) external onlyOwner {
+        rewardToken = IERC20Extended(rewardToken_);
+    }
+
+    function setRouter(address router_) external onlyOwner {
+        router = IUniswapV2Router02(router_);
     }
 
     function setTokenAddress(address token_) external initializer onlyToken {
@@ -495,7 +517,7 @@ contract DividendDistributor is IDividendDistributor, Context {
         shares[shareholder].totalExcluded = getCumulativeDividends(shares[shareholder].amount);
     } 
 
-    function deposit() external payable override onlyToken {
+    function deposit() external payable override onlyTokenAndOwner {
         uint256 balanceBefore = rewardToken.balanceOf(address(this));
 
         address[] memory path = new address[](2);
@@ -505,13 +527,13 @@ contract DividendDistributor is IDividendDistributor, Context {
         router.swapExactETHForTokensSupportingFeeOnTransferTokens {
             value: _msgValue()
         } (0, path, address(this), block.timestamp);
-
+        
         uint256 amount = rewardToken.balanceOf(address(this)).sub(balanceBefore);
 
         totalDividends = totalDividends.add(amount);
         dividendsPerShare = dividendsPerShare.add(dividendsPerShareAccuracyFactor.mul(amount).div(totalShares));
     }
-
+    
     function process(uint256 gas) external override onlyToken {
         uint256 shareholderCount = shareholders.length;
 
