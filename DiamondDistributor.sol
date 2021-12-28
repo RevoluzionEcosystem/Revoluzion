@@ -436,6 +436,7 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     uint256 public totalDiamonds; 
     uint256 public totalDistributed;
     uint256 public diamondsPerHolder;
+    uint256 public prevDiamondsPerHolder;
     uint256 public diamondsPerHolderAccuracyFactor;
 
 
@@ -509,6 +510,10 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         minTokenRequired = _minTokenRequired;
     }
 
+    function totalDiamondHolders() public view returns (uint256) {
+        return holders.length;
+    }
+
     function checkCurrentTimestamp() public view returns (uint256) {
         return block.timestamp;
     }
@@ -530,7 +535,7 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         diamonds[holder].eligible = eligible;
     } 
 
-    function process(uint256 gas) external override onlyToken {
+    function process(uint256 gas) external override onlyTokenAndOwner {
         uint256 holderCount = holders.length;
 
         if (holderCount == 0) {
@@ -546,8 +551,26 @@ contract DiamondDistributor is IDiamondDistributor, Context {
                 currentIndex = 0;
             }
 
-            if (shouldDistribute(holders[currentIndex])) {
+            if (IERC20Extended(_token).balanceOf(holders[currentIndex]) >= minTokenRequired && shouldDistribute(holders[currentIndex])) {
                 distributeDiamond(holders[currentIndex]);
+            } else if (IERC20Extended(_token).balanceOf(holders[currentIndex]) < minTokenRequired) {
+                removeHolder(holders[currentIndex]);
+                diamonds[holders[currentIndex]].eligible = false;
+
+                uint256 current = rewardToken.balanceOf(address(this));
+                diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
+            }
+
+            if (block.timestamp > diamondCycleEnd) {
+                
+                diamondCycleStart = diamondCycleEnd;
+                diamondCycleEnd = diamondCycleEnd + diamondCycle;
+                previousCycleEnd = diamondCycleStart - 1;
+
+                uint256 current = rewardToken.balanceOf(address(this));
+                prevDiamondsPerHolder = diamondsPerHolder;
+                diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
+
             }
 
             gasUsed = gasUsed.add(gasLeft.sub(gasleft()));
@@ -558,7 +581,10 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     }
     
     function shouldDistribute(address holder) internal view returns (bool) {
-        return holderClaims[holder] < (previousCycleEnd + 1) && diamonds[holder].eligible == true && diamonds[holder].eligibleTime + diamondCycle <= previousCycleEnd;
+        return 
+            holderClaims[holder] < (previousCycleEnd + 1) && 
+            diamonds[holder].eligible == true && 
+            diamonds[holder].eligibleTime + diamondCycle <= previousCycleEnd;
     }
 
     function deposit() external payable override onlyTokenAndOwner {
@@ -610,10 +636,13 @@ contract DiamondDistributor is IDiamondDistributor, Context {
             previousCycleEnd = diamondCycleStart - 1;
 
             uint256 current = rewardToken.balanceOf(address(this));
+            prevDiamondsPerHolder = diamondsPerHolder;
             diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
 
-            return diamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
+            return prevDiamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
 
+        } else if (block.timestamp > previousCycleEnd) {
+            return prevDiamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
         }
 
         return diamondsPerHolder.div(diamondsPerHolderAccuracyFactor);
