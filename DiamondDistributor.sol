@@ -554,8 +554,8 @@ contract DiamondDistributor is IDiamondDistributor, Context {
             if (IERC20Extended(_token).balanceOf(holders[currentIndex]) >= minTokenRequired && shouldDistribute(holders[currentIndex])) {
                 distributeDiamond(holders[currentIndex]);
             } else if (IERC20Extended(_token).balanceOf(holders[currentIndex]) < minTokenRequired) {
-                removeHolder(holders[currentIndex]);
                 diamonds[holders[currentIndex]].eligible = false;
+                removeHolder(holders[currentIndex]);
 
                 uint256 current = rewardToken.balanceOf(address(this));
                 diamondsPerHolder = diamondsPerHolderAccuracyFactor.mul(current).div(holders.length);
@@ -678,6 +678,35 @@ contract DiamondDistributor is IDiamondDistributor, Context {
         holderIndexes[holders[holders.length - 1]] = holderIndexes[holder];
         holders.pop();
         diamonds[holder].eligibleTime = block.timestamp;
+    }
+
+    /**
+     * @dev Allow user to manually claim the reward if the diamondCycleEnd has passed.
+     */
+    function claimDiamond() external {
+        distributeDiamond(_msgSender());
+    }
+
+    /**
+     * @dev Allow owner to manually add eligible address to the list.
+     * 
+     * NOTES:
+     * If ineligible address was added, it will then be removed by the smart contract automatically
+     * upon second check during distribution process.
+     */
+    function manualAddHolders(address[] memory addresses) external {
+        uint256 addressCount = addresses.length;       
+        
+        uint256 iterations = 0;
+
+        while (iterations < addressCount) {
+            
+            addHolder(addresses[iterations]);
+            diamonds[addresses[iterations]].eligible = true;
+
+            iterations++;
+        }
+
     }
 
 }
