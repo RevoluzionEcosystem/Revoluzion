@@ -681,13 +681,6 @@ contract DiamondDistributor is IDiamondDistributor, Context {
     }
 
     /**
-     * @dev Allow user to manually claim the reward if the diamondCycleEnd has passed.
-     */
-    function claimDiamond() external {
-        distributeDiamond(_msgSender());
-    }
-
-    /**
      * @dev Allow owner to manually add eligible address to the list.
      * 
      * NOTES:
