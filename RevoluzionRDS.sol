@@ -1,18 +1,22 @@
-// ██████  ███████ ██    ██  ██████  ██      ██    ██ ███████ ██  ██████  ███    ██                   
-// ██   ██ ██      ██    ██ ██    ██ ██      ██    ██     ██  ██ ██    ██ ████   ██                  
-// ██████  █████   ██    ██ ██    ██ ██      ██    ██   ██    ██ ██    ██ ██ ██  ██                   
-// ██   ██ ██       ██  ██  ██    ██ ██      ██    ██  ██     ██ ██    ██ ██  ██ ██                   
-// ██   ██ ███████   ████    ██████  ███████  ██████  ███████ ██  ██████  ██   ████              
+/*
 
-//Revoluzion Ecosystem
-//WEB: https://revoluzion.io
-//DAPP: https://revoluzion.app
+██████  ███████ ██    ██  ██████  ██      ██    ██ ███████ ██  ██████  ███    ██                   
+██   ██ ██      ██    ██ ██    ██ ██      ██    ██     ██  ██ ██    ██ ████   ██                  
+██████  █████   ██    ██ ██    ██ ██      ██    ██   ██    ██ ██    ██ ██ ██  ██                   
+██   ██ ██       ██  ██  ██    ██ ██      ██    ██  ██     ██ ██    ██ ██  ██ ██                   
+██   ██ ███████   ████    ██████  ███████  ██████  ███████ ██  ██████  ██   ████              
 
-// Revoluzion Raffle Distribution System Smart Contract
+Revoluzion Ecosystem
+WEB: https://revoluzion.io
+DAPP: https://revoluzion.app
+
+Revoluzion Raffle Distribution System Smart Contract
+
+*/
 
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.19;
+pragma solidity 0.8.18;
 
 /* LIBRARY */
 
@@ -610,9 +614,9 @@ interface ILottery {
 contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     using SafeERC20 for IERC20;
 
-    address public injectorAddress = address(0);
-    address public operatorAddress = address(0);
-    address public treasuryAddress = address(0);
+    address public injectorAddress = address(0x57b230D64e41dbF808b5b253e3366C47FBeb9cae);
+    address public operatorAddress = address(0x57b230D64e41dbF808b5b253e3366C47FBeb9cae);
+    address public treasuryAddress = address(0x9C48405d8E4d107C9DC033993d18D60F67380ca1);
 
     uint256 public currentLotteryId = 0;
     uint256 public currentTicketId = 0;
@@ -621,8 +625,10 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
 
     uint256 public maxNumberTicketsPerBuyOrClaim = 100;
 
-    uint256 public maximumTicketPrice = 50 ether; // Max ticket price allowed is 50 BUSD
-    uint256 public minimumTicketPrice = 0.1 ether; // Min ticket price allowed is 0.1 BUSD
+    uint256 public maximumTicketPrice = 10 ether; // Max ticket for BUSD token is 10
+    uint256 public minimumTicketPrice = 0.1 ether; // Min ticket for BUSD token is 1
+
+    uint256 public totalInLeaderboard = 0;
 
     uint256 public lotteryDuration;
     uint256 public defaultTicketPriceInToken;
@@ -630,10 +636,10 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     uint256 public defaultFeeTreasury;
     uint256[6] public defaultBreakdownRewards;
 
-    uint256 public constant MIN_DISCOUNT_DIVISOR = 100; // Min divisor discount for bulk ticket purchase
+    uint256 public constant MIN_DISCOUNT_DIVISOR = 10; // Min divisor discount for bulk ticket purchase
     uint256 public constant MIN_LENGTH_LOTTERY = 1 minutes + 1 minutes; // Min length of the lottery is 30 mins
     uint256 public constant MAX_LENGTH_LOTTERY = 7 days + 5 minutes; // Max length of the lottery is 7 days
-    uint256 public constant MAX_TREASURY_FEE = 1000; // Max treasury fee can be set to 10%
+    uint256 public constant MAX_TREASURY_FEE = 500; // Max treasury fee can be set to 5%
 
     IERC20 public immutable lotteryToken;
     IRandomNumberGenerator public randomGenerator;
@@ -666,6 +672,16 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         address owner;
     }
 
+    struct Leaderboard {
+        address userAddress;
+        uint256 totalTicketBought;
+        uint256 totalRewardsClaimed;
+    }
+
+    mapping(address => Leaderboard) public leaderboardInfo;
+    mapping(uint256 => address) public leaderboardRef;
+    mapping(address => uint256) public leaderboardIndexRef;
+    
     // Mapping are cheaper than arrays
     mapping(uint256 => Lottery) private _lotteries;
     mapping(uint256 => Ticket) private _tickets;
@@ -759,13 +775,13 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         require(
             (initLotteryDuration > MIN_LENGTH_LOTTERY) &&
                 (initLotteryDuration < MAX_LENGTH_LOTTERY),
-            "RDS length outside of range"
+            "Raffle length outside of range"
         );
 
         require(
             (initDefaultTicketPriceInToken >= minimumTicketPrice) &&
                 (initDefaultTicketPriceInToken <= maximumTicketPrice),
-            "RDS Ticket Price is outside of limits"
+            "Raffle Ticket Price is outside of limits"
         );
 
         require(
@@ -806,6 +822,43 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         _bracketCalculator[3] = 1111;
         _bracketCalculator[4] = 11111;
         _bracketCalculator[5] = 111111;
+    }
+    
+    function getLeaderboard() public view returns (Leaderboard[] memory) {
+        Leaderboard[] memory board = new Leaderboard[](totalInLeaderboard);
+
+        if (totalInLeaderboard == 0) {
+            return board;
+        }
+
+        for (uint256 i = 1; i <= totalInLeaderboard; i++) {
+            address user = leaderboardRef[i];
+            Leaderboard memory item = leaderboardInfo[user];
+            board[i - 1] = item;
+        }
+
+        board = sortLeaderboard(board);
+
+        return board;
+    }
+
+    function sortLeaderboard(Leaderboard[] memory arr) internal pure returns (Leaderboard[] memory) {
+        uint256 n = arr.length;
+
+        for (uint256 i = 0; i < n - 1; i++) {
+            for (uint256 j = 0; j < n - i - 1; j++) {
+                if (arr[j].totalTicketBought < arr[j + 1].totalTicketBought ||
+                    (arr[j].totalTicketBought == arr[j + 1].totalTicketBought &&
+                    arr[j].totalRewardsClaimed < arr[j + 1].totalRewardsClaimed)
+                ) {
+                    Leaderboard memory temp = arr[j];
+                    arr[j] = arr[j + 1];
+                    arr[j + 1] = temp;
+                }
+            }
+        }
+
+        return arr;
     }
 
 
@@ -869,10 +922,10 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
 
 
     /**
-    * @notice Get the total rewards received by a user from all lottery IDs combined
-    * @param user The address of the user
-    * @return The total rewards received by the user
-    */
+     * @notice Get the total rewards received by a user from all lottery IDs combined
+     * @param user The address of the user
+     * @return The total rewards received by the user
+     */
     function getUserRewardsReceived(address user) public view returns (uint256) {
         uint256 totalRewards = 0;
 
@@ -901,7 +954,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         require(
             (initLotteryDuration > MIN_LENGTH_LOTTERY) &&
                 (initLotteryDuration < MAX_LENGTH_LOTTERY),
-            "RDS duration length is outside of range"
+            "Raffle duration length is outside of range"
         );
         require(
             initLotteryDuration != lotteryDuration,
@@ -922,7 +975,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         require(
             (initDefaultTicketPriceInToken >= minimumTicketPrice) &&
                 (initDefaultTicketPriceInToken <= maximumTicketPrice),
-            "RDS Ticket Price is outside of limits"
+            "Raffle Ticket Price is outside of limits"
         );
         require(
             initDefaultTicketPriceInToken != defaultTicketPriceInToken,
@@ -1011,11 +1064,11 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
 
         require(
             _lotteries[idLottery].status == Status.Open,
-            "RDS is currently not open"
+            "Raffle is currently not open"
         );
         require(
             block.timestamp < _lotteries[idLottery].endTime,
-            "RDS has over"
+            "Raffle has over"
         );
 
         // Calculate number of TOKEN to this contract
@@ -1024,6 +1077,15 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
             _lotteries[idLottery].priceTicketInToken,
             ticketNumbers.length
         );
+
+        if (leaderboardIndexRef[msg.sender] == 0) {
+            totalInLeaderboard += 1;
+            leaderboardIndexRef[msg.sender] = totalInLeaderboard;
+            leaderboardRef[totalInLeaderboard] = msg.sender;
+            leaderboardInfo[msg.sender].userAddress = msg.sender;
+        }
+
+        leaderboardInfo[msg.sender].totalTicketBought += ticketNumbers.length;
 
         // Increment the total amount collected for the lottery round
         _lotteries[idLottery].amountCollectedInToken += amountTokenToTransfer;
@@ -1099,7 +1161,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         );
         require(
             _lotteries[idLottery].status == Status.Claimable,
-            "RDS not claimable"
+            "Raffle not claimable"
         );
 
         // Initializes the rewardInTokenToTransfer
@@ -1157,6 +1219,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
 
         // Transfer money to msg.sender
         lotteryToken.safeTransfer(msg.sender, rewardInTokenToTransfer);
+        leaderboardInfo[msg.sender].totalRewardsClaimed += rewardInTokenToTransfer;
     }
 
     /**
@@ -1191,11 +1254,11 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     function _closeLottery(uint256 idLottery) internal {
         require(
             _lotteries[idLottery].status == Status.Open,
-            "RDS not open"
+            "Raffle not open"
         );
         require(
             block.timestamp > _lotteries[idLottery].endTime,
-            "RDS not over"
+            "Raffle not over"
         );
         _lotteries[idLottery].firstTicketIdNextLottery = currentTicketId;
 
@@ -1227,7 +1290,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         bool autoInjection
     ) internal {
         bool close = _lotteries[idLottery].status == Status.Close;
-        require(close, "RDS not close ");
+        require(close, "Raffle not close ");
         require(
             idLottery == randomGenerator.viewLatestLotteryId(),
             "Numbers are not yet drawn"
@@ -1327,7 +1390,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     ) external onlyOwner {
         require(
             _lotteries[currentLotteryId].status == Status.Claimable,
-            "RDS not in claimable"
+            "Raffle not in claimable"
         );
 
         randomGenerator = IRandomNumberGenerator(randomGeneratorAddress);
@@ -1347,13 +1410,13 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
-    * @notice Inject funds
-    * @param idLottery: lottery id
-    * @param amount: amount to inject in TOKEN token
-    * @dev Callable by owner or injector address
-    */
+     * @notice Inject funds
+     * @param idLottery: lottery id
+     * @param amount: amount to inject in TOKEN token
+     * @dev Callable by owner or injector address
+     */
     function injectFunds(uint256 idLottery, uint256 amount) external override onlyOwnerOrInjector {
-        require(_lotteries[idLottery].status == Status.Open, "RDS not open");
+        require(_lotteries[idLottery].status == Status.Open, "Raffle not open");
 
         _lotteries[idLottery].amountCollectedInToken += amount;
         totalInjectedAmount += amount; // Increment the total injected amount
@@ -1398,13 +1461,13 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         require(
             (currentLotteryId == 0) ||
                 (_lotteries[currentLotteryId].status == Status.Claimable),
-            "Not time to start RDS"
+            "Not time to start Raffle"
         );
 
         require(
             ((timeEnd - block.timestamp) > MIN_LENGTH_LOTTERY) &&
                 ((timeEnd - block.timestamp) < MAX_LENGTH_LOTTERY),
-            "RDS time length outside of range"
+            "Raffle time length outside of range"
         );
 
         require(
@@ -1843,7 +1906,7 @@ contract RandomNumberGenerator is IRandomNumberGenerator, Revoluzion {
     function setLotteryAddress(address lotteryAddress) external onlyOwner {
         require(
             lotteryAddress != address(0),
-            "Cannot set RDS address as null address"
+            "Cannot set Raffle address as null address"
         );
         lottery = lotteryAddress;
     }
