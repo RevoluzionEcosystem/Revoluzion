@@ -626,7 +626,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     uint256 public maxNumberTicketsPerBuyOrClaim = 100;
 
     uint256 public maximumTicketPrice = 10 ether; // Max ticket for BUSD token is 10
-    uint256 public minimumTicketPrice = 0.1 ether; // Min ticket for BUSD token is 1
+    uint256 public minimumTicketPrice = 0.1 ether; // Min ticket for BUSD token is 0.1
 
     uint256 public totalInLeaderboard = 0;
 
@@ -1059,7 +1059,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         require(ticketNumbers.length != 0, "No ticket specified");
         require(
             ticketNumbers.length <= maxNumberTicketsPerBuyOrClaim,
-            "Tickets purchased cannot exceed 100"
+            "Tickets purchased cannot exceed 100 at a time"
         );
 
         require(
