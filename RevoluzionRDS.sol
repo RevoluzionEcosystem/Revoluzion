@@ -7,16 +7,15 @@
 ██   ██ ███████   ████    ██████  ███████  ██████  ███████ ██  ██████  ██   ████              
 
 Revoluzion Ecosystem
-WEB: https://revoluzion.io
-DAPP: https://revoluzion.app
+https://revoluzion.app
 
-Revoluzion Raffle Distribution System Smart Contract
+Revoluzion Raffluzion - A Raffle Distribution System Smart Contract
 
 */
 
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.18;
+pragma solidity 0.8.25;
 
 /* LIBRARY */
 
@@ -28,7 +27,7 @@ library Address {
      * @dev Returns true if `account` is a contract.
      *
      * [IMPORTANT]
-     * ====
+     * ==== 
      * It is unsafe to assume that an address for which this function returns
      * false is an externally-owned account (EOA) and not a contract.
      *
@@ -43,16 +42,16 @@ library Address {
      * Furthermore, `isContract` will also return true if the target contract within
      * the same transaction is already scheduled for destruction by `SELFDESTRUCT`,
      * which only has an effect at the end of a transaction.
-     * ====
+     * ==== 
      *
      * [IMPORTANT]
-     * ====
+     * ==== 
      * You shouldn't rely on `isContract` to protect against flash loan attacks!
      *
      * Preventing calls from contracts is highly discouraged. It breaks composability, breaks support for smart wallets
      * like Gnosis Safe, and does not provide security since it can be circumvented by calling from a contract
      * constructor.
-     * ====
+     * ==== 
      */
     function isContract(address account) internal view returns (bool) {
         // This method relies on extcodesize/address.code.length, which returns 0
@@ -333,7 +332,7 @@ abstract contract ReentrancyGuard {
     // but in exchange the refund on every call to nonReentrant will be lower in
     // amount. Since refunds are capped to a percentage of the total
     // transaction's gas, it is best to keep them low in cases like this one, to
-    // increase the likelihood of the full refund coming into effect.
+        // increase the likelihood of the full refund coming into effect.
     uint256 private constant _NOT_ENTERED = 1;
     uint256 private constant _ENTERED = 2;
 
@@ -607,9 +606,16 @@ interface ILottery {
     function viewCurrentLotteryId() external returns (uint256);
 }
 
-/** @title Lottery.
- * @notice It is a contract for a lottery system using
- * randomness provided externally.
+/** 
+ * @title RevoluzionRDS - Revoluzion Raffle Distribution System Smart Contract
+ * @notice This contract implements a complete lottery system with the following features:
+ * - Multiple brackets for rewards based on matching numbers
+ * - Bulk ticket purchases with discount mechanism
+ * - Random number generation for selecting winners
+ * - Treasury fee collection and auto-injection options
+ * - Comprehensive leaderboard tracking user participation
+ * @author Revoluzion Ecosystem Team
+ * @dev Uses SafeERC20 for token transfers and ReentrancyGuard to prevent re-entrancy attacks
  */
 contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     using SafeERC20 for IERC20;
@@ -717,6 +723,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     event AdminTokenRecovery(address token, uint256 amount);
+    event AdminWithdrawLotteryTokens(uint256 amount);
     event LotteryClose(
         uint256 indexed lotteryId,
         uint256 firstTicketIdNextLottery
@@ -760,9 +767,14 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     );
 
     /**
-     * @notice Constructor
-     * @dev RandomNumberGenerator must be deployed prior to this contract
-     * @param _lotteryTokenAddress: address of the TOKEN token
+     * @notice Contract constructor that initializes the lottery system
+     * @dev Creates a new RandomNumberGenerator contract and initializes the lottery parameters
+     * @param _lotteryTokenAddress Address of the ERC20 token used for lottery tickets and rewards
+     * @param initLotteryDuration Duration in seconds for each lottery round
+     * @param initDefaultTicketPriceInToken Default price of a ticket in lottery tokens
+     * @param initDefaultDivisorForDiscount Default divisor used to calculate bulk purchase discounts
+     * @param initDefaultFeeTreasury Default treasury fee percentage (scaled by 10000)
+     * @param initDefaultBreakdownRewards Default breakdown of rewards distribution across brackets (must sum to 10000)
      */
     constructor(
         address _lotteryTokenAddress,
@@ -824,6 +836,11 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         _bracketCalculator[5] = 111111;
     }
     
+    /**
+     * @notice Retrieves the complete leaderboard of all lottery participants
+     * @dev Returns an array of leaderboard entries sorted by ticket purchase count (highest first)
+     * @return An array of Leaderboard structs containing user addresses and their statistics
+     */
     function getLeaderboard() public view returns (Leaderboard[] memory) {
         Leaderboard[] memory board = new Leaderboard[](totalInLeaderboard);
 
@@ -842,6 +859,12 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         return board;
     }
 
+    /**
+     * @notice Sorts the leaderboard array by ticket counts and rewards
+     * @dev Uses a bubble sort algorithm, prioritizing ticket count and using rewards as a tiebreaker
+     * @param arr The unsorted leaderboard array
+     * @return The sorted leaderboard array with highest performers first
+     */
     function sortLeaderboard(Leaderboard[] memory arr) internal pure returns (Leaderboard[] memory) {
         uint256 n = arr.length;
 
@@ -933,8 +956,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
             uint256[] storage ticketIds = _userTicketIdsPerLotteryId[user][lotteryId];
 
             for (uint256 j = 0; j < ticketIds.length; j++) {
-                uint256 ticketId = ticketIds[j];
-                uint256 rewardForTicket = _calculateRewardsForTicketId(lotteryId, ticketId, 0);
+                uint256 rewardForTicket = _calculateRewardsForTicketId(lotteryId, ticketIds[j], 0);
                 totalRewards += rewardForTicket;
             }
         }
@@ -1047,10 +1069,12 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
-     * @notice Buy tickets for the current lottery
-     * @param idLottery: lotteryId
-     * @param ticketNumbers: array of ticket numbers between 1,000,000 and 1,999,999
-     * @dev Callable by users
+     * @notice Allows users to purchase lottery tickets with their preferred numbers
+     * @dev Implements bulk purchase discount mechanism and updates user's leaderboard statistics
+     * @param idLottery The ID of the lottery for which tickets are being purchased
+     * @param ticketNumbers Array of ticket numbers chosen by the user (must be between 1,000,000 and 1,999,999)
+     * @custom:security Non-reentrant function that prevents contracts from calling
+     * @custom:cost Users pay lottery token based on number of tickets and discount divisor
      */
     function buyTickets(
         uint256 idLottery,
@@ -1142,11 +1166,13 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
-     * @notice Claim a set of winning tickets for a lottery
-     * @param idLottery: lottery id
-     * @param idsTicket: array of ticket ids
-     * @param brackets: array of brackets for the ticket ids
-     * @dev Callable by users only, not contract!
+     * @notice Allows users to claim rewards for their winning lottery tickets
+     * @dev Implements security checks to ensure proper ticket ownership and bracket validation
+     * @param idLottery The ID of the lottery for which tickets are being claimed
+     * @param idsTicket Array of ticket IDs being claimed
+     * @param brackets Array of brackets corresponding to each ticket ID (must be 0-5)
+     * @custom:security Non-reentrant function that prevents contracts from calling
+     * @custom:requirements Lottery must be in Claimable status and caller must be the ticket owner
      */
     function claimTickets(
         uint256 idLottery,
@@ -1379,6 +1405,59 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
+     * @notice Get comprehensive user statistics
+     * @param user: user address
+     * @return totalTickets: total tickets bought, totalWinningTickets: total winning tickets,
+     *         totalRewards: total rewards claimed, activeLotteryTickets: tickets in current lottery
+     */
+    function getUserStats(address user) external view returns (
+        uint256 totalTickets,
+        uint256 totalWinningTickets,
+        uint256 totalRewards,
+        uint256 activeLotteryTickets
+    ) {
+        totalTickets = getUserTicketCount(user);
+        totalRewards = leaderboardInfo[user].totalRewardsClaimed;
+        activeLotteryTickets = _userTicketIdsPerLotteryId[user][currentLotteryId].length;
+        
+        // Count winning tickets across all lotteries
+        uint256 winCount = 0;
+        for (uint256 lotteryId = 0; lotteryId <= currentLotteryId; lotteryId++) {
+            if (_lotteries[lotteryId].status == Status.Claimable) {
+                uint256[] storage userTickets = _userTicketIdsPerLotteryId[user][lotteryId];
+                for (uint256 j = 0; j < userTickets.length; j++) {
+                    (bool isWinner, ) = _checkTicketHighestBracket(lotteryId, userTickets[j]);
+                    if (isWinner) {
+                        winCount++;
+                    }
+                }
+            }
+        }
+        totalWinningTickets = winCount;
+        
+        return (totalTickets, totalWinningTickets, totalRewards, activeLotteryTickets);
+    }
+
+    /**
+     * @notice Check if a user owns specific tickets
+     * @param user: user address to check
+     * @param ticketIds: array of ticket IDs to verify ownership
+     * @return Array of booleans indicating ownership status for each ticket
+     */
+    function verifyTicketOwnership(
+        address user,
+        uint256[] calldata ticketIds
+    ) external view returns (bool[] memory) {
+        bool[] memory ownershipStatus = new bool[](ticketIds.length);
+        
+        for (uint256 i = 0; i < ticketIds.length; i++) {
+            ownershipStatus[i] = (_tickets[ticketIds[i]].owner == user);
+        }
+        
+        return ownershipStatus;
+    }
+
+    /**
      * @notice Change the random generator
      * @dev The calls to functions are used to verify the new generator implements them properly.
      * It is necessary to wait for the VRF response before starting a round.
@@ -1537,6 +1616,23 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
+     * @notice It allows the owner to withdraw lottery tokens from the contract in case of emergency or migration
+     * @param amount: the amount of lottery tokens to withdraw
+     * @dev Only callable by owner. Use with caution as this affects the lottery pool.
+     */
+    function withdrawLotteryTokens(uint256 amount) external onlyOwner {
+        // Check that amount is not more than contract balance
+        uint256 contractBalance = lotteryToken.balanceOf(address(this));
+        require(amount <= contractBalance, "Insufficient funds in contract");
+        
+        // Emit event for transparency
+        emit AdminWithdrawLotteryTokens(amount);
+        
+        // Transfer lottery tokens to contract owner
+        lotteryToken.safeTransfer(msg.sender, amount);
+    }
+
+    /**
      * @notice It allows the admin to recover wrong tokens sent to the contract
      * @param tokenAddress: the address of the token to withdraw
      * @param tokenAmount: the number of token amount to withdraw
@@ -1630,6 +1726,37 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
                 priceTicket,
                 numberTickets
             );
+    }
+
+    /**
+     * @notice Calculate bulk ticket prices for different quantities
+     * @param divisorForDiscount: divisor for the discount
+     * @param priceTicket: price of a single ticket (in TOKEN)
+     * @param quantities: array of different ticket quantities to check
+     * @return Array of prices corresponding to each quantity
+     */
+    function calculateBulkPricesForTickets(
+        uint256 divisorForDiscount,
+        uint256 priceTicket,
+        uint256[] calldata quantities
+    ) external pure returns (uint256[] memory) {
+        require(
+            divisorForDiscount >= MIN_DISCOUNT_DIVISOR,
+            "Must be >= MIN_DISCOUNT_DIVISOR"
+        );
+        
+        uint256[] memory prices = new uint256[](quantities.length);
+        
+        for (uint256 i = 0; i < quantities.length; i++) {
+            require(quantities[i] != 0, "Quantity must be > 0");
+            prices[i] = _calculateTotalPriceForBulkTickets(
+                divisorForDiscount,
+                priceTicket,
+                quantities[i]
+            );
+        }
+        
+        return prices;
     }
 
     /**
@@ -1766,6 +1893,139 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
+     * @notice Check if multiple tickets are winners
+     * @param idLottery: lottery id
+     * @param ticketIds: array of ticket ids to check
+     * @return Array of booleans indicating if each ticket is a winner and array of brackets showing highest matching
+     */
+    function checkWinningTickets(
+        uint256 idLottery,
+        uint256[] calldata ticketIds
+    ) external view returns (bool[] memory, uint32[] memory) {
+        require(
+            _lotteries[idLottery].status == Status.Claimable,
+            "Lottery not claimable"
+        );
+        
+        bool[] memory areWinners = new bool[](ticketIds.length);
+        uint32[] memory winningBrackets = new uint32[](ticketIds.length);
+        
+        for (uint256 i = 0; i < ticketIds.length; i++) {
+            (bool isWinner, uint32 bracket) = _checkTicketHighestBracket(idLottery, ticketIds[i]);
+            areWinners[i] = isWinner;
+            winningBrackets[i] = bracket;
+        }
+        
+        return (areWinners, winningBrackets);
+    }
+    
+    /**
+     * @notice Get all user tickets for all past lotteries
+     * @param user: user address
+     * @return Array of lottery IDs and array of arrays containing ticket IDs
+     */
+    function getUserTicketsForAllLotteries(address user) external view returns (
+        uint256[] memory, 
+        uint256[][] memory
+    ) {
+        uint256[] memory lotteryIds = new uint256[](currentLotteryId + 1);
+        uint256[][] memory ticketIds = new uint256[][](currentLotteryId + 1);
+        
+        for (uint256 i = 0; i <= currentLotteryId; i++) {
+            lotteryIds[i] = i;
+            ticketIds[i] = _userTicketIdsPerLotteryId[user][i];
+        }
+        
+        return (lotteryIds, ticketIds);
+    }
+    
+    /**
+     * @notice Get lottery stats (total tickets sold, total rewards distributed, etc.)
+     * @param idLottery: lottery id
+     * @return Total tickets sold, amount collected, amount in rewards, number of winners
+     */
+    function getLotteryStats(uint256 idLottery) external view returns (
+        uint256 ticketsSold,
+        uint256 amountCollected,
+        uint256 rewardsDistributed,
+        uint256 numberOfWinners
+    ) {
+        Lottery storage lottery = _lotteries[idLottery];
+        
+        // Calculate total tickets sold
+        if (idLottery == currentLotteryId) {
+            ticketsSold = currentTicketId - lottery.firstTicketId;
+        } else {
+            ticketsSold = lottery.firstTicketIdNextLottery - lottery.firstTicketId;
+        }
+        
+        // Get amount collected
+        amountCollected = lottery.amountCollectedInToken;
+        
+        // Calculate rewards distributed
+        rewardsDistributed = 0;
+        numberOfWinners = 0;
+        
+        if (lottery.status == Status.Claimable) {
+            for (uint8 i = 0; i < 6; i++) {
+                rewardsDistributed += lottery.tokenPerBracket[i] * lottery.countWinnersPerBracket[i];
+                numberOfWinners += lottery.countWinnersPerBracket[i];
+            }
+        }
+        
+        return (ticketsSold, amountCollected, rewardsDistributed, numberOfWinners);
+    }
+
+    /**
+     * @notice Get lottery timing information
+     * @param idLottery: lottery ID
+     * @return start: start time, end: end time, status: lottery status, timeRemaining: time remaining (if open)
+     */
+    function getLotteryTiming(uint256 idLottery) external view returns (
+        uint256 start,
+        uint256 end,
+        Status status,
+        uint256 timeRemaining
+    ) {
+        require(idLottery <= currentLotteryId, "Lottery does not exist");
+        
+        Lottery storage lottery = _lotteries[idLottery];
+        start = lottery.startTime;
+        end = lottery.endTime;
+        status = lottery.status;
+        
+        if (status == Status.Open && block.timestamp < end) {
+            timeRemaining = end - block.timestamp;
+        } else {
+            timeRemaining = 0;
+        }
+        
+        return (start, end, status, timeRemaining);
+    }
+
+    /**
+     * @notice Get historical winning numbers for multiple lotteries
+     * @param lotteryIds: array of lottery IDs to check
+     * @return Array of winning numbers and array of lottery statuses
+     */
+    function getHistoricalWinningNumbers(
+        uint256[] calldata lotteryIds
+    ) external view returns (uint32[] memory, Status[] memory) {
+        uint32[] memory winningNumbers = new uint32[](lotteryIds.length);
+        Status[] memory statuses = new Status[](lotteryIds.length);
+        
+        for (uint256 i = 0; i < lotteryIds.length; i++) {
+            if (lotteryIds[i] <= currentLotteryId) {
+                Lottery storage lottery = _lotteries[lotteryIds[i]];
+                winningNumbers[i] = lottery.finalNumber;
+                statuses[i] = lottery.status;
+            }
+        }
+        
+        return (winningNumbers, statuses);
+    }
+
+    /**
      * @notice Calculate rewards for a given ticket
      * @param idLottery: lottery id
      * @param idTicket: ticket id
@@ -1835,7 +2095,7 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
     }
 
     /**
-     * @notice Calculate final price for bulk of tickets
+     * @notice Calculate final price for bulk of tickets with gas optimization
      * @param divisorForDiscount: divisor for the discount (the smaller it is, the greater the discount is)
      * @param _priceTicket: price of a ticket
      * @param _numberTickets: number of tickets purchased
@@ -1845,10 +2105,13 @@ contract RevoluzionRDS is ReentrancyGuard, ILottery, Revoluzion {
         uint256 _priceTicket,
         uint256 _numberTickets
     ) internal pure returns (uint256) {
-        return
-            (_priceTicket *
-                _numberTickets *
-                (divisorForDiscount + 1 - _numberTickets)) / divisorForDiscount;
+        // Use unchecked to save gas since we have validation in public functions
+        unchecked {
+            return
+                (_priceTicket *
+                    _numberTickets *
+                    (divisorForDiscount + 1 - _numberTickets)) / divisorForDiscount;
+        }
     }
 
     /**
