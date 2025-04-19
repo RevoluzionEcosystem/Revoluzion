@@ -9,7 +9,7 @@
 Revoluzion Ecosystem
 https://revoluzion.app
 
-Revoluzion Raffluzion - A Raffle Distribution System Smart Contract
+RevoluzionRDS - A Raffle Distribution System Smart Contract
 
 */
 
