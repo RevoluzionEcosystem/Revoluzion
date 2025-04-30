@@ -563,7 +563,7 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     mapping(bytes32 => TransactionDetails) private transactionDetails;
     
     // Global transaction counter
-    uint256 private transactionCount;
+    uint256 private transactionCounter;
     
     /**
      * @dev Structure for high-level transaction history
@@ -592,9 +592,9 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     /**
      * @dev Checks if a transaction might be suspicious based on volume
      * @param amount The transaction amount to check
-     * @return true if transaction is suspicious
+     * @return isSuspicious true if transaction is suspicious
      */
-    function _isSuspiciousTransaction(uint256 amount) private view returns (bool) {
+    function _isSuspiciousTransaction(uint256 amount) private view returns (bool isSuspicious) {
         // If unlimited transfers is enabled, don't flag any transactions
         if (allowUnlimitedTransfers) {
             return false;
@@ -614,8 +614,8 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
      * @param amounts Array of amounts (optional for equal distribution)
      */
     function _validateInputs(
-        address[] calldata recipients,
-        uint256[] calldata amounts
+        address[] memory recipients,
+        uint256[] memory amounts
     ) private view {
         uint256 recipientsLength = recipients.length;
 
@@ -655,9 +655,9 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     /**
      * @dev Calculates the fee amount based on the total amount and adds base fee
      * @param amount Total amount being sent
-     * @return Fee amount in native currency
+     * @return fee Fee amount in native currency
      */
-    function _calculateFee(uint256 amount) private view returns (uint256) {
+    function _calculateFee(uint256 amount) private view returns (uint256 fee) {
         // Calculate percentage-based fee
         uint256 percentageFee = (amount * feeRate) / FEE_DENOMINATOR;
         
@@ -689,7 +689,7 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
      * @param recipientCount Number of recipients
      * @param fee Fee paid
      * @param extraData Additional transaction data
-     * @return Transaction ID
+     * @return transactionId Transaction ID
      */
     function _trackTransaction(
         address user,
@@ -698,14 +698,14 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
         uint256 recipientCount,
         uint256 fee,
         bytes memory extraData
-    ) private returns (bytes32) {
+    ) private returns (bytes32 transactionId) {
         // Generate transaction ID
-        bytes32 transactionId = keccak256(
+        transactionId = keccak256(
             abi.encodePacked(
                 user,
                 transactionType,
                 block.timestamp,
-                transactionCount++
+                transactionCounter++
             )
         );
         
@@ -855,7 +855,10 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
         address[] calldata recipients,
         uint256 amountEach
     ) external payable nonReentrant whenNotPausedOrOwner {
-        _validateInputs(recipients, new uint256[](0));
+        // Create an empty array for _validateInputs
+        uint256[] memory emptyAmounts = new uint256[](0);
+        _validateInputs(recipients, emptyAmounts);
+        
         require(amountEach > 0, "Amount must be greater than 0");
 
         uint256 recipientsLength = recipients.length;
@@ -1004,7 +1007,10 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
         address[] calldata recipients,
         uint256 amountEach
     ) external payable nonReentrant whenNotPausedOrOwner {
-        _validateInputs(recipients, new uint256[](0));
+        // Create an empty array for _validateInputs
+        uint256[] memory emptyAmounts = new uint256[](0);
+        _validateInputs(recipients, emptyAmounts);
+        
         require(token != address(0), "Token address cannot be zero");
         require(amountEach > 0, "Amount must be greater than 0");
 
@@ -1324,9 +1330,9 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
      * @dev Gets a user preference
      * @param user User address
      * @param key Preference key
-     * @return Preference value
+     * @return preferenceValue Preference value
      */
-    function getUserPreference(address user, bytes32 key) external view returns (bytes memory) {
+    function getUserPreference(address user, bytes32 key) external view returns (bytes memory preferenceValue) {
         return userPreferences[user][key];
     }
     
@@ -1408,18 +1414,18 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     /**
      * @dev Get user's favorite tokens
      * @param user User address
-     * @return Array of favorite token addresses
+     * @return favoriteTokens Array of favorite token addresses
      */
-    function getUserFavoriteTokens(address user) external view returns (address[] memory) {
+    function getUserFavoriteTokens(address user) external view returns (address[] memory favoriteTokens) {
         return userFavoriteTokens[user];
     }
     
     /**
      * @dev Get user's favorite recipients
      * @param user User address
-     * @return Array of favorite recipient addresses
+     * @return favoriteRecipients Array of favorite recipient addresses
      */
-    function getUserFavoriteRecipients(address user) external view returns (address[] memory) {
+    function getUserFavoriteRecipients(address user) external view returns (address[] memory favoriteRecipients) {
         return userFavoriteRecipients[user];
     }
     
@@ -1428,13 +1434,13 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
      * @param user User address
      * @param startIndex Start index in history array
      * @param count Number of transactions to return
-     * @return Array of transactions
+     * @return transactions Array of transactions
      */
     function getUserTransactionHistory(
         address user,
         uint256 startIndex,
         uint256 count
-    ) external view returns (Transaction[] memory) {
+    ) external view returns (Transaction[] memory transactions) {
         Transaction[] storage history = userTransactionHistory[user];
         
         // Calculate actual count (don't exceed array bounds)
@@ -1456,7 +1462,12 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     /**
      * @dev Get transaction details by ID
      * @param transactionId Transaction ID
-     * @return Transaction details
+     * @return sender Address of the sender
+     * @return transactionType Type of the transaction
+     * @return timestamp Timestamp of the transaction
+     * @return totalAmount Total amount involved in the transaction
+     * @return recipientCount Number of recipients in the transaction
+     * @return fee Fee associated with the transaction
      */
     function getTransactionDetails(bytes32 transactionId) external view returns (
         address sender,
@@ -1484,13 +1495,13 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
      * @param user User address
      * @param startIndex Start index in history array
      * @param count Number of transfers to return
-     * @return Array of token transfers
+     * @return transfers Array of token transfers
      */
     function getTokenTransferHistory(
         address user,
         uint256 startIndex,
         uint256 count
-    ) external view returns (TokenTransferInfo[] memory) {
+    ) external view returns (TokenTransferInfo[] memory transfers) {
         TokenTransferInfo[] storage history = tokenTransferHistory[user];
         
         // Calculate actual count (don't exceed array bounds)
@@ -1512,7 +1523,12 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
     /**
      * @dev Get user statistics
      * @param user User address
-     * @return User stats struct
+     * @return transactionCount Total number of transactions executed by the user
+     * @return totalVolumeNative Total volume of native currency transferred by the user
+     * @return totalVolumeTokens Total volume of tokens transferred by the user
+     * @return lastActiveTime Timestamp of the user's last activity
+     * @return totalFeesPaid Total fees paid by the user
+     * @return totalRecipientsServed Total number of recipients served by the user
      */
     function getUserStats(address user) external view returns (
         uint256 transactionCount,
@@ -1621,4 +1637,9 @@ contract RevoluzionMultisender is Ownable, ReentrancyGuard, IMultiSenderEvents {
             SafeERC20.safeTransfer(tokenContract, msg.sender, balance);
         }
     }
+    
+    /**
+     * @dev Allows the contract to receive native currency
+     */
+    receive() external payable {}
 }
