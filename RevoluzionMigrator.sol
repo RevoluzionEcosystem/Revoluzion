@@ -9,7 +9,8 @@
 Revoluzion Ecosystem
 https://revoluzion.app
 
-Revoluzion Multisender - A smart contract enabling batch transfers of native, tokens, or multiple type of tokens to multiple recipients with varying amounts.
+Revoluzion Migrator - Token Migration smart contract for project owners to migrate their tokens to a new token address with a conversion rate.
+Modified: Fees are only charged to project owners when creating migrations, not to users during migration.
 
 */
 
@@ -482,6 +483,7 @@ struct MigrationArchive {
 /**
  * @title RevoluzionMigrator
  * @dev Contract for token migration with improved security, tracking, and frontend integration
+ * Modified to only charge fees to project owners when creating migrations, not to users
  */
 contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
@@ -495,7 +497,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     error MigrationExpired();
     error RateLimitExceeded();
     error AmountTooLow();
-    error FeePercentageTooHigh();
+    error InsufficientFee();
     error TokenDecimalsTooHigh();
     error NameTooLong();
     error DescriptionTooLong();
@@ -518,8 +520,8 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     // Fee denominator for percentage calculations (10000 = 100%)
     uint256 private constant FEE_DENOMINATOR = 10000;
 
-    // Maximum fee percentage allowed (500 = 5%)
-    uint256 private constant MAX_FEE_PERCENTAGE = 500;
+    // Fixed fee amount for migration creation (can be adjusted by the owner)
+    uint256 public migrationCreationFee;
 
     // Time constants
     uint256 private constant SECONDS_PER_DAY = 86400;
@@ -551,7 +553,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
 
         // Slot 3+
         uint256 rate; // 32 bytes (full slot)
-        uint256 feePercentage; // 32 bytes (full slot)
         uint256 totalMigrated; // 32 bytes (full slot)
         uint256 expiryTime; // 32 bytes (full slot)
         MigrationMetadata metadata; // multiple slots
@@ -586,8 +587,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     // Whether token whitelist is enabled
     bool public whitelistEnabled;
 
-    // Track fees collected per token
-    mapping(address => uint256) public feesCollectedPerToken;
+    // Track fees collected in native currency
     uint256 public totalFeesCollected;
 
     // Track global statistics
@@ -619,9 +619,9 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         address indexed oldToken,
         address indexed newToken,
         uint256 rate,
-        uint256 feePercentage,
         uint256 expiryTime,
-        string name
+        string name,
+        uint256 feeAmount
     );
 
     event TokensDeposited(
@@ -637,8 +637,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         address indexed projectOwner,
         address indexed newToken,
         uint256 oldAmount,
-        uint256 newAmount,
-        uint256 feeAmount
+        uint256 newAmount
     );
 
     event TokensWithdrawn(
@@ -648,7 +647,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     );
 
     event FeeCollected(
-        address indexed token,
+        address indexed projectOwner,
         uint256 amount,
         uint256 totalCollected
     );
@@ -656,7 +655,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     event MigrationUpdated(
         address indexed projectOwner,
         uint256 newRate,
-        uint256 newFeePercentage,
         uint256 newExpiryTime
     );
 
@@ -694,10 +692,11 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     );
 
     event FeesWithdrawn(
-        address indexed token,
         address indexed recipient,
         uint256 amount
     );
+
+    event MigrationCreationFeeUpdated(uint256 oldFee, uint256 newFee);
 
     event RoleGranted(
         bytes32 indexed role,
@@ -775,9 +774,15 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
 
     /**
      * @dev Constructor for the RevoluzionMigrator contract
+     * @param _initialFee Initial fee for migration creation in native currency
+     * @param _feeRecipient Address that will receive fees
      */
-    constructor() {
-        // Initialize contract
+    constructor(uint256 _initialFee, address _feeRecipient) {
+        if (_feeRecipient == address(0)) {
+            revert InvalidTokenAddress();
+        }
+        migrationCreationFee = _initialFee;
+        feeRecipient = _feeRecipient;
     }
 
     /**
@@ -790,6 +795,16 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         }
         feeRecipient = _feeRecipient;
         emit FeeRecipientSet(_feeRecipient);
+    }
+
+    /**
+     * @dev Updates the migration creation fee
+     * @param _newFee New fee amount in native currency
+     */
+    function updateMigrationCreationFee(uint256 _newFee) external onlyOwner {
+        uint256 oldFee = migrationCreationFee;
+        migrationCreationFee = _newFee;
+        emit MigrationCreationFeeUpdated(oldFee, _newFee);
     }
 
     /**
@@ -967,7 +982,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
      * @param _oldToken Address of the token to migrate from
      * @param _newToken Address of the token to migrate to
      * @param _rate Conversion rate in basis points (10000 = 1:1)
-     * @param _feePercentage Fee percentage in basis points (100 = 1%)
      * @param _expiryTime Timestamp when migration expires (0 = no expiry)
      * @param _name Name of the migration project
      * @param _description Description of the migration
@@ -980,7 +994,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         address _oldToken,
         address _newToken,
         uint256 _rate,
-        uint256 _feePercentage,
         uint256 _expiryTime,
         string memory _name,
         string memory _description,
@@ -1006,8 +1019,15 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             revert AmountTooLow();
         }
 
-        if (_feePercentage > MAX_FEE_PERCENTAGE) {
-            revert FeePercentageTooHigh();
+        // Ensure the project owner has paid the required fee
+        if (msg.value < migrationCreationFee) {
+            revert InsufficientFee();
+        }
+
+        // Process fee payment
+        if (migrationCreationFee > 0) {
+            totalFeesCollected += msg.value;
+            emit FeeCollected(msg.sender, msg.value, totalFeesCollected);
         }
 
         // Add input validation for metadata
@@ -1091,7 +1111,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             migration.oldToken = _oldToken;
             migration.newToken = _newToken;
             migration.rate = _rate;
-            migration.feePercentage = _feePercentage;
             migration.expiryTime = _expiryTime;
             migration.oldTokenDecimals = oldTokenDecimals;
             migration.newTokenDecimals = newTokenDecimals;
@@ -1109,7 +1128,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
                 oldToken: _oldToken,
                 newToken: _newToken,
                 rate: _rate,
-                feePercentage: _feePercentage,
                 totalMigrated: 0,
                 expiryTime: _expiryTime,
                 oldTokenDecimals: oldTokenDecimals,
@@ -1140,9 +1158,9 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             _oldToken,
             _newToken,
             _rate,
-            _feePercentage,
             _expiryTime,
-            _name
+            _name,
+            msg.value
         );
     }
 
@@ -1151,7 +1169,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
      * @param _oldToken Address of the token to migrate from
      * @param _newToken Address of the token to migrate to
      * @param _rate Conversion rate in basis points (10000 = 1:1)
-     * @param _feePercentage Fee percentage in basis points (100 = 1%)
      * @param _expiryTime Timestamp when migration expires (0 = no expiry)
      * @param _name Name of the migration project
      * @param _description Description of the migration
@@ -1164,7 +1181,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         address _oldToken,
         address _newToken,
         uint256 _rate,
-        uint256 _feePercentage,
         uint256 _expiryTime,
         string memory _name,
         string memory _description,
@@ -1172,12 +1188,11 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         string memory _websiteURL,
         string memory _socialURL,
         uint256 _deadline
-    ) external whenNotPaused updateUserActivity {
+    ) external payable whenNotPaused updateUserActivity {
         _createMigrationInternal(
             _oldToken,
             _newToken,
             _rate,
-            _feePercentage,
             _expiryTime,
             _name,
             _description,
@@ -1195,19 +1210,17 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         address _oldToken,
         address _newToken,
         uint256 _rate,
-        uint256 _feePercentage,
         uint256 _expiryTime,
         string memory _name,
         string memory _description,
         string memory _logoURI,
         string memory _websiteURL,
         string memory _socialURL
-    ) external whenNotPaused updateUserActivity {
+    ) external payable whenNotPaused updateUserActivity {
         _createMigrationInternal(
             _oldToken,
             _newToken,
             _rate,
-            _feePercentage,
             _expiryTime,
             _name,
             _description,
@@ -1221,29 +1234,22 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     /**
      * @dev Updates migration parameters
      * @param _rate New conversion rate
-     * @param _feePercentage New fee percentage
      * @param _expiryTime New expiry time
      */
     function updateMigration(
         uint256 _rate,
-        uint256 _feePercentage,
         uint256 _expiryTime
     ) external onlyProjectOwner whenNotPaused updateUserActivity {
         if (_rate == 0) {
             revert AmountTooLow();
         }
 
-        if (_feePercentage > MAX_FEE_PERCENTAGE) {
-            revert FeePercentageTooHigh();
-        }
-
         Migration storage migration = migrations[msg.sender];
 
         migration.rate = _rate;
-        migration.feePercentage = _feePercentage;
         migration.expiryTime = _expiryTime;
 
-        emit MigrationUpdated(msg.sender, _rate, _feePercentage, _expiryTime);
+        emit MigrationUpdated(msg.sender, _rate, _expiryTime);
     }
 
     /**
@@ -1445,7 +1451,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
         rateLimited
         updateUserActivity
     {
-        // CRITICAL FIX: Using storage instead of memory to ensure state updates are persisted
+        // Using storage instead of memory to ensure state updates are persisted
         Migration storage migration = migrations[_projectOwner];
 
         uint256 depositAmount = userDeposits[msg.sender][migration.oldToken];
@@ -1497,36 +1503,18 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
                 (10 ** decimalsDiff);
         }
 
-        // Calculate fee (percentage of converted amount)
-        uint256 feeAmount = (convertedAmount * migration.feePercentage) /
-            FEE_DENOMINATOR;
-
-        // Calculate final amount after fee
-        uint256 finalAmount = convertedAmount - feeAmount;
-
-        // Update fee tracking
-        feesCollectedPerToken[migration.newToken] += feeAmount;
-        totalFeesCollected += feeAmount;
-
         // Record this transaction in history
         _recordTransaction(msg.sender, TX_TYPE_MIGRATION, depositAmount);
 
-        // Transfer new tokens to user
-        IERC20(migration.newToken).safeTransfer(msg.sender, finalAmount);
+        // Transfer new tokens to user - no fee taken
+        IERC20(migration.newToken).safeTransfer(msg.sender, convertedAmount);
 
         emit TokensMigrated(
             msg.sender,
             _projectOwner,
             migration.newToken,
             depositAmount,
-            finalAmount,
-            feeAmount
-        );
-
-        emit FeeCollected(
-            migration.newToken,
-            feeAmount,
-            feesCollectedPerToken[migration.newToken]
+            convertedAmount
         );
     }
 
@@ -1590,32 +1578,25 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Withdraws collected fees for a specific token to the fee recipient
-     * @param _token Token address
+     * @dev Withdraws collected fees to the fee recipient
      */
-    function withdrawCollectedFees(
-        address _token
-    ) external nonReentrant onlyOwner {
-        if (_token == address(0)) {
-            revert InvalidTokenAddress();
-        }
-
+    function withdrawCollectedFees() external nonReentrant onlyOwner {
         if (feeRecipient == address(0)) {
             revert FeeRecipientNotSet();
         }
 
-        uint256 feeAmount = feesCollectedPerToken[_token];
+        uint256 feeAmount = totalFeesCollected;
         if (feeAmount == 0) {
             revert NoFeesCollected();
         }
 
         // Reset fee tracking before transfer
-        feesCollectedPerToken[_token] = 0;
+        totalFeesCollected = 0;
 
         // Transfer fees to fee recipient
-        IERC20(_token).safeTransfer(feeRecipient, feeAmount);
+        payable(feeRecipient).transfer(feeAmount);
 
-        emit FeesWithdrawn(_token, feeRecipient, feeAmount);
+        emit FeesWithdrawn(feeRecipient, feeAmount);
     }
 
     /**
@@ -1625,13 +1606,15 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     function withdrawNativeCurrency(
         uint256 _amount
     ) external nonReentrant onlyOwner {
-        uint256 balance = address(this).balance;
-        if (balance == 0) {
+        // Ensure we don't withdraw collected fees
+        uint256 availableBalance = address(this).balance - totalFeesCollected;
+        
+        if (availableBalance == 0) {
             revert AmountTooLow();
         }
 
-        uint256 amountToWithdraw = _amount == 0 ? balance : _amount;
-        if (amountToWithdraw > balance) {
+        uint256 amountToWithdraw = _amount == 0 ? availableBalance : _amount;
+        if (amountToWithdraw > availableBalance) {
             revert InsufficientBalance();
         }
 
@@ -1802,7 +1785,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
      * @return oldToken Old token address
      * @return newToken New token address
      * @return rate Conversion rate
-     * @return feePercentage Fee percentage
      * @return totalMigrated Total tokens migrated
      * @return expiryTime Expiry timestamp
      * @return active Whether migration is active
@@ -1819,7 +1801,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             address oldToken,
             address newToken,
             uint256 rate,
-            uint256 feePercentage,
             uint256 totalMigrated,
             uint256 expiryTime,
             bool active,
@@ -1833,7 +1814,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             migration.oldToken,
             migration.newToken,
             migration.rate,
-            migration.feePercentage,
             migration.totalMigrated,
             migration.expiryTime,
             migration.active,
@@ -1883,7 +1863,7 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
      * @dev Calculates the expected output amount for a given input
      * @param _projectOwner Project owner address
      * @param _inputAmount Amount of old tokens
-     * @return Expected new token amount after conversion and fees
+     * @return Expected new token amount after conversion
      */
     function calculateExpectedOutput(
         address _projectOwner,
@@ -1920,12 +1900,8 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
                 (10 ** decimalsDiff);
         }
 
-        // Calculate fee (percentage of converted amount)
-        uint256 feeAmount = (convertedAmount * migration.feePercentage) /
-            FEE_DENOMINATOR;
-
-        // Return final amount after fee
-        return convertedAmount - feeAmount;
+        // Return final amount (no fee deduction in this version)
+        return convertedAmount;
     }
 
     /**
@@ -2114,28 +2090,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Gets fee collection data for multiple tokens
-     * @param _tokens Array of token addresses
-     * @return totalFees Array of total fees collected per token
-     */
-    function getFeeCollectionData(
-        address[] calldata _tokens
-    ) external view returns (uint256[] memory totalFees) {
-        totalFees = new uint256[](_tokens.length);
-
-        for (uint256 i = 0; i < _tokens.length; ) {
-            totalFees[i] = feesCollectedPerToken[_tokens[i]];
-
-            // Gas optimization
-            unchecked {
-                i++;
-            }
-        }
-
-        return totalFees;
-    }
-
-    /**
      * @dev Gets archived migrations (paginated)
      * @param _offset Starting index
      * @param _limit Maximum number of items to return
@@ -2202,68 +2156,6 @@ contract RevoluzionMigrator is Ownable, ReentrancyGuard, Pausable {
             totalsMigrated,
             timestamps
         );
-    }
-
-    /**
-     * @dev Gets user transaction history (paginated)
-     * @param _user User address
-     * @param _offset Starting index
-     * @param _limit Maximum number of items to return
-     * @return transactionIds Array of transaction IDs
-     * @return transactionTypes Array of transaction types
-     * @return timestamps Array of timestamps
-     * @return amounts Array of amounts
-     */
-    function getUserTransactionHistory(
-        address _user,
-        uint256 _offset,
-        uint256 _limit
-    )
-        external
-        view
-        returns (
-            bytes32[] memory transactionIds,
-            uint8[] memory transactionTypes,
-            uint256[] memory timestamps,
-            uint256[] memory amounts
-        )
-    {
-        Transaction[] storage history = userTransactionHistory[_user];
-
-        if (_offset >= history.length) {
-            return (
-                new bytes32[](0),
-                new uint8[](0),
-                new uint256[](0),
-                new uint256[](0)
-            );
-        }
-
-        uint256 end = _offset + _limit;
-        if (end > history.length) {
-            end = history.length;
-        }
-
-        uint256 length = end - _offset;
-        transactionIds = new bytes32[](length);
-        transactionTypes = new uint8[](length);
-        timestamps = new uint256[](length);
-        amounts = new uint256[](length);
-
-        for (uint256 i = 0; i < length; ) {
-            Transaction storage transaction = history[_offset + i];
-            transactionIds[i] = transaction.transactionId;
-            transactionTypes[i] = transaction.transactionType;
-            timestamps[i] = transaction.timestamp;
-            amounts[i] = transaction.amount;
-
-            // Gas optimization
-            unchecked {
-                i++;
-            }
-        }
-
-        return (transactionIds, transactionTypes, timestamps, amounts);
     }
 
     /**
